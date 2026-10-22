@@ -6,7 +6,7 @@ This fork builds the upstream `PHP-7.4-CVE-2026-109618-109619` branch, anchored 
 
 [Workflow runs](https://github.com/qaz50237/php-src/actions/workflows/php74-windows.yml)
 
-The workflow uses standard `windows-2022` GitHub-hosted runners in this public repository. It builds x64 TS and NTS using the VC15 14.16 toolset and official PHP SDK 2.8.4 pinned at `cfe7325dfdc9f20e54e85fb8929e32625d5f624e`. PHP dependencies come from the official PHP Windows dependency service; their series may change over time.
+The workflow uses standard `windows-2022` GitHub-hosted runners in this public repository. It builds x64 TS and NTS using the VC15 14.16 toolset and official PHP SDK 2.8.4 pinned at `cfe7325dfdc9f20e54e85fb8929e32625d5f624e`. PHP dependencies come from the official PHP Windows dependency service; their series may change over time. At build time the PHP 7.4 stable series lists legacy dependencies including OpenSSL 1.1.1s, curl 7.70.0 and libxml2 2.9.10. This workflow does not update those libraries and its output must not be represented as a comprehensively security-updated runtime. See https://downloads.php.net/~windows/php-sdk/deps/series/packages-7.4-vc15-x64-stable.txt .
 
 Only successful smoke tests and selected PHPT tests (`tests/basic`, `ext/session/tests`) allow upload of the binary artifact. These are not the full PHP suite or CVE-specific exploit validation. Each binary artifact includes ZIP files, SHA256SUMS.txt, BUILD-INFO.json, PHP configuration information, and test output. Artifacts are retained for 7 days.
 
