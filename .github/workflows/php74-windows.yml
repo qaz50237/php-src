@@ -1,0 +1,116 @@
+name: PHP 7.4 Windows security build
+on:
+  push:
+    branches: [build/php74-windows-security]
+    paths: [.github/workflows/php74-windows.yml]
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  build:
+    name: x64 VC15 ${{ matrix.mode }}
+    runs-on: windows-2022
+    timeout-minutes: 90
+    strategy:
+      fail-fast: false
+      matrix:
+        mode: [nts, ts]
+    env:
+      BUILD_MODE: ${{ matrix.mode }}
+      NO_INTERACTION: '1'
+      REPORT_EXIT_STATUS: '1'
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          persist-credentials: false
+      - name: Verify patched source
+        shell: pwsh
+        run: |
+          git merge-base --is-ancestor 712e60f9edfd03f0960fc4fc3c2c375f42b90aa2 HEAD
+          if ($LASTEXITCODE) { throw 'Required upstream mitigation is absent' }
+      - name: Install VC15 toolset
+        shell: pwsh
+        run: |
+          $vs = & "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe" -latest -products '*' -property installationPath
+          $setup = "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\setup.exe"
+          $p = Start-Process $setup -ArgumentList @('modify','--installPath',('"' + $vs + '"'),'--add','Microsoft.VisualStudio.Component.VC.v141.x86.x64','--quiet','--norestart','--nocache') -Wait -PassThru
+          if ($p.ExitCode -notin @(0,3010)) { throw "VS setup exit code $($p.ExitCode)" }
+          if (!(Test-Path "$vs\VC\Tools\MSVC\14.16*")) { throw 'VC15 toolset not installed' }
+      - name: Prepare official PHP SDK
+        shell: pwsh
+        run: |
+          git -c core.autocrlf=false clone --branch php-sdk-2.8.4 --depth 1 https://github.com/php/php-sdk-binary-tools.git C:\php-sdk
+          if ($LASTEXITCODE) { throw 'SDK clone failed' }
+          $actual = git -C C:\php-sdk rev-parse HEAD
+          if ($actual -ne 'cfe7325dfdc9f20e54e85fb8929e32625d5f624e') { throw 'Unexpected SDK revision' }
+          @'
+          @echo off
+          cd /d "%GITHUB_WORKSPACE%"
+          call phpsdk_deps --update --no-backup --branch 7.4 --stability stable --crt vc15 --deps C:\php-deps
+          if errorlevel 1 exit /b 1
+          call buildconf.bat --force
+          if errorlevel 1 exit /b 1
+          set ZTS_FLAG=
+          if "%BUILD_MODE%"=="nts" set ZTS_FLAG=--disable-zts
+          call configure.bat --enable-snapshot-build --disable-debug-pack --without-analyzer --with-php-build=C:\php-deps %ZTS_FLAG%
+          if errorlevel 1 exit /b 1
+          nmake /NOLOGO
+          if errorlevel 1 exit /b 1
+          nmake /NOLOGO snap
+          exit /b %errorlevel%
+          '@ | Set-Content C:\build-php.bat -Encoding ascii
+      - name: Compile and package
+        shell: cmd
+        run: C:\php-sdk\phpsdk-starter.bat -c vc15 -a x64 -s 14.16 -t C:\build-php.bat
+      - name: Smoke tests and PHPT
+        shell: pwsh
+        run: |
+          $dir = if ($env:BUILD_MODE -eq 'ts') { 'x64\Release_TS' } else { 'x64\Release' }
+          $php = Join-Path $PWD "$dir\php.exe"
+          if (!(Test-Path $php)) { throw "Missing $php" }
+          & $php -n -v
+          if ($LASTEXITCODE) { throw 'PHP startup failed' }
+          & $php -n -r 'if (PHP_MAJOR_VERSION !== 7 || PHP_MINOR_VERSION !== 4 || PHP_INT_SIZE !== 8) exit(1); if ((bool)PHP_ZTS !== (getenv("BUILD_MODE") === "ts")) exit(2); echo "Runtime configuration OK\n";'
+          if ($LASTEXITCODE) { throw 'Runtime configuration mismatch' }
+          & $php -n -i | Out-File build-phpinfo.txt
+          & $php -n run-tests.php -n -p $php tests/basic ext/session/tests 2>&1 | Tee-Object build-tests.txt
+          if ($LASTEXITCODE) { throw 'PHPT regression tests failed; inspect diagnostics artifact' }
+      - name: Collect binaries and provenance
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force out | Out-Null
+          $archives = @(Get-ChildItem x64 -Recurse -Filter 'php-*.zip' | Where-Object { $_.Name -notmatch 'debug|devel|test' })
+          if (!$archives.Count) { throw 'No binary distribution ZIP produced' }
+          foreach ($file in $archives) { Copy-Item $file.FullName out }
+          $metadata = [ordered]@{
+            upstream_patch = '712e60f9edfd03f0960fc4fc3c2c375f42b90aa2'
+            source_commit = (git rev-parse HEAD)
+            sdk_commit = 'cfe7325dfdc9f20e54e85fb8929e32625d5f624e'
+            mode = $env:BUILD_MODE
+            architecture = 'x64'
+            toolset = 'VC15 / 14.16'
+            run_url = "https://github.com/$env:GITHUB_REPOSITORY/actions/runs/$env:GITHUB_RUN_ID"
+            notice = 'Unofficial EOL PHP build with upstream minimum mitigation for CVE-2026-109618 and CVE-2026-109619. Does not establish coverage of other vulnerabilities. Validate application and extension compatibility before deployment.'
+          }
+          $metadata | ConvertTo-Json | Set-Content out\BUILD-INFO.json
+          Copy-Item build-phpinfo.txt,build-tests.txt out
+          Get-ChildItem out -Filter '*.zip' | ForEach-Object { "$((Get-FileHash $_.FullName -Algorithm SHA256).Hash.ToLower())  $($_.Name)" } | Set-Content out\SHA256SUMS.txt
+      - name: Upload binaries
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: php74-security-vc15-x64-${{ matrix.mode }}
+          path: out/*
+          if-no-files-found: error
+          retention-days: 7
+      - name: Upload diagnostics
+        if: failure()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: diagnostics-${{ matrix.mode }}
+          retention-days: 3
+          path: |
+            build-*.txt
+            config.nice.bat
+            config.log
+            **/*.diff
+            **/*.out
