@@ -108,7 +108,7 @@ jobs:
           if ($LASTEXITCODE) { throw 'PHP startup failed' }
           & $php -n -r 'if (PHP_MAJOR_VERSION !== 7 || PHP_MINOR_VERSION !== 4 || PHP_INT_SIZE !== 8) exit(1); if ((bool)PHP_ZTS !== (getenv("BUILD_MODE") === "ts")) exit(2); echo "Runtime configuration OK\n";'
           if ($LASTEXITCODE) { throw 'Runtime configuration mismatch' }
-          & $php -n -i | Out-File build-phpinfo.txt
+          & $php -n -r 'phpinfo(INFO_GENERAL | INFO_CONFIGURATION | INFO_MODULES);' | Out-File build-phpinfo.txt
           $env:TEST_PHP_CGI_EXECUTABLE = Join-Path $PWD "$dir\php-cgi.exe"
           & $php -n run-tests.php -n -p $php tests/basic ext/session/tests 2>&1 | Tee-Object build-tests.txt
           if ($LASTEXITCODE) { throw 'PHPT regression tests failed; inspect diagnostics artifact' }
